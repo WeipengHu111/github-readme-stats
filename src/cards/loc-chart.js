@@ -4,8 +4,8 @@ import { getCardColors } from "../common/color.js";
 
 // Chart-specific color presets per theme brightness.
 const CHART_PRESETS = {
-  light: { line_color: "2563EB", area_color: "10B981", point_color: "F59E0B", deletion_color: "DC2626" },
-  dark:  { line_color: "06B6D4", area_color: "22C55E", point_color: "FEBC2E", deletion_color: "F87171" },
+  light: { add_color: "10B981", del_color: "DC2626" },
+  dark:  { add_color: "22C55E", del_color: "F87171" },
 };
 
 /**
@@ -22,34 +22,21 @@ const isDarkBg = (hex) => {
 };
 
 /**
- * Build a smooth Catmull-Rom spline SVG path through the given points.
- * @param {{ x: number, y: number }[]} pts
- * @param {number} [tension=0.3]
- * @returns {string} SVG path d attribute.
+ * Format large numbers compactly.
+ * @param {number} n
+ * @returns {string}
  */
-const catmullRomPath = (pts, tension = 0.3) => {
-  if (pts.length < 2) return "";
-  if (pts.length === 2) return `M${pts[0].x.toFixed(1)},${pts[0].y.toFixed(1)} L${pts[1].x.toFixed(1)},${pts[1].y.toFixed(1)}`;
-
-  let d = `M${pts[0].x.toFixed(1)},${pts[0].y.toFixed(1)}`;
-  for (let i = 0; i < pts.length - 1; i++) {
-    const p0 = pts[Math.max(i - 1, 0)];
-    const p1 = pts[i];
-    const p2 = pts[i + 1];
-    const p3 = pts[Math.min(i + 2, pts.length - 1)];
-
-    const cp1x = p1.x + (p2.x - p0.x) * tension;
-    const cp1y = p1.y + (p2.y - p0.y) * tension;
-    const cp2x = p2.x - (p3.x - p1.x) * tension;
-    const cp2y = p2.y - (p3.y - p1.y) * tension;
-
-    d += ` C${cp1x.toFixed(1)},${cp1y.toFixed(1)} ${cp2x.toFixed(1)},${cp2y.toFixed(1)} ${p2.x.toFixed(1)},${p2.y.toFixed(1)}`;
-  }
-  return d;
+const formatNum = (n) => {
+  const abs = Math.abs(n);
+  if (abs >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
+  if (abs >= 1000) return `${(n / 1000).toFixed(1)}K`;
+  return n.toString();
 };
 
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
 /**
- * Render a cumulative lines-of-code area chart as SVG.
+ * Render a monthly lines-of-code bar chart as SVG.
  *
  * @param {import("../fetchers/loc").LocData} data
  * @param {object} options
@@ -69,9 +56,7 @@ const catmullRomPath = (pts, tension = 0.3) => {
 const renderLocChart = (data, options = {}) => {
   const {
     theme,
-    line_color: userLineColor,
-    area_color: userAreaColor,
-    point_color: userPointColor,
+    area_color: userAddColor,
     hide_border,
     custom_title,
     months,
@@ -86,7 +71,6 @@ const renderLocChart = (data, options = {}) => {
     theme,
   });
 
-  // Pick chart-specific preset based on resolved background brightness.
   const bgHex = typeof bgColor === "string" ? bgColor.replace(/^#/, "") : "fffefe";
   const preset = isDarkBg(bgHex) ? CHART_PRESETS.dark : CHART_PRESETS.light;
 
@@ -94,10 +78,8 @@ const renderLocChart = (data, options = {}) => {
   const title_color = titleColor.replace(/^#/, "");
   const text_color = textColor.replace(/^#/, "");
   const border_color = borderColor.replace(/^#/, "");
-  const line_color = userLineColor || preset.line_color;
-  const area_color = userAreaColor || preset.area_color;
-  const point_color = userPointColor || preset.point_color;
-  const deletion_color = preset.deletion_color;
+  const add_color = userAddColor || preset.add_color;
+  const del_color = preset.del_color;
 
   const width = 850;
   const height = 300;
@@ -114,138 +96,106 @@ const renderLocChart = (data, options = {}) => {
     </svg>`;
   }
 
-  // Build cumulative net lines series from full history.
-  let cumulative = 0;
-  const allPoints = weeklyData.map((w) => {
-    cumulative += w.additions - w.deletions;
-    return { week: w.week, value: cumulative, additions: w.additions, deletions: w.deletions };
-  });
-
-  // If months is set, slice to the visible window (keep cumulative baseline).
-  let points = allPoints;
-  if (months && months > 0) {
-    const cutoff = Date.now() / 1000 - months * 30 * 86400;
-    points = allPoints.filter((p) => p.week >= cutoff);
-    if (points.length === 0) points = allPoints;
+  // --- Aggregate weekly data into monthly buckets ---
+  /** @type {Map<string, { year: number, month: number, additions: number, deletions: number }>} */
+  const monthlyMap = new Map();
+  for (const w of weeklyData) {
+    const d = new Date(w.week * 1000);
+    const key = `${d.getFullYear()}-${d.getMonth()}`;
+    const entry = monthlyMap.get(key) || { year: d.getFullYear(), month: d.getMonth(), additions: 0, deletions: 0 };
+    entry.additions += w.additions;
+    entry.deletions += w.deletions;
+    monthlyMap.set(key, entry);
   }
 
-  const minTime = points[0].week;
-  const maxTime = points[points.length - 1].week;
-  const timeRange = maxTime - minTime || 1;
-  const maxVal = Math.max(...points.map((p) => p.value), 0);
-  const minVal = Math.min(...points.map((p) => p.value), 0);
-  const valRange = maxVal - minVal || 1;
+  let monthlyData = [...monthlyMap.values()].sort((a, b) => a.year - b.year || a.month - b.month);
 
-  // Linear time scale (for months mode, sqrt is unnecessary).
-  const toX = (t) => padding.left + ((t - minTime) / timeRange) * chartW;
-  const toY = (v) => padding.top + chartH - ((v - minVal) / valRange) * chartH;
+  // Filter to last N months if specified.
+  if (months && months > 0) {
+    monthlyData = monthlyData.slice(-months);
+  }
 
-  // Convert points to pixel coordinates.
-  const pixelPts = points.map((p) => ({ x: toX(p.week), y: toY(p.value) }));
+  if (monthlyData.length === 0) {
+    return `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+      <rect width="100%" height="100%" fill="#${bg_color}" />
+      <text x="50%" y="50%" fill="#${text_color}" text-anchor="middle" font-family="'Segoe UI', Ubuntu, Sans-Serif" font-size="14">No data available</text>
+    </svg>`;
+  }
 
-  // Build smooth Catmull-Rom spline path.
-  const linePath = catmullRomPath(pixelPts);
+  // Find max values for scaling.
+  const maxAdd = Math.max(...monthlyData.map((m) => m.additions), 1);
+  const maxDel = Math.max(...monthlyData.map((m) => m.deletions), 1);
+  const maxVal = Math.max(maxAdd, maxDel);
 
-  // Build area path: smooth line → bottom-right → bottom-left → close.
-  const bottomY = toY(minVal);
-  const areaPath = `${linePath} L${pixelPts[pixelPts.length - 1].x.toFixed(1)},${bottomY.toFixed(1)} L${pixelPts[0].x.toFixed(1)},${bottomY.toFixed(1)} Z`;
+  // The chart is split: additions go up from baseline, deletions go down.
+  // Baseline is at a ratio that balances the visual weight.
+  const addRatio = maxAdd / (maxAdd + maxDel);
+  const baselineY = padding.top + chartH * addRatio;
 
-  // Format numbers.
-  const formatNum = (n) => {
-    if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
-    if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
-    return n.toString();
-  };
+  const toAddY = (v) => baselineY - (v / maxVal) * chartH * addRatio;
+  const toDelY = (v) => baselineY + (v / maxVal) * chartH * (1 - addRatio);
 
-  // Date format: "Sep", "Oct", "Nov", etc. for months mode; adaptive otherwise.
-  const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-  const nowTs = Date.now() / 1000;
-  const oneYearAgo = nowTs - 365 * 86400;
-  const formatDate = (ts) => {
-    const d = new Date(ts * 1000);
-    if (months && months <= 12) return `${MONTHS[d.getMonth()]}`;
-    if (ts < oneYearAgo) return `${d.getFullYear()}`;
-    return `${MONTHS[d.getMonth()]} '${String(d.getFullYear()).slice(2)}`;
-  };
+  // Bar layout.
+  const n = monthlyData.length;
+  const barGroupW = chartW / n;
+  const barW = Math.min(barGroupW * 0.6, 40);
+  const gap = (barGroupW - barW) / 2;
 
-  // Y-axis labels (4 ticks for cleaner look).
-  const yTicks = 4;
-  const yLabels = Array.from({ length: yTicks + 1 }, (_, i) => {
-    const val = minVal + (valRange / yTicks) * i;
-    return { val, y: toY(val) };
-  });
-
-  // Smart X-axis labels.
-  const MIN_LABEL_PX = 85;
-  const buildXLabels = () => {
-    const candidates = [];
-    const sd = new Date(minTime * 1000);
-    sd.setDate(1); sd.setHours(0, 0, 0, 0);
-    let cur = sd.getTime() / 1000;
-    while (cur <= maxTime) {
-      if (cur >= minTime) {
-        const cd = new Date(cur * 1000);
-        if (months && months <= 12) {
-          // In months mode, every month is a candidate.
-          candidates.push(cur);
-        } else if (cur >= oneYearAgo || cd.getMonth() === 0) {
-          candidates.push(cur);
-        }
-      }
-      const nd = new Date(cur * 1000);
-      nd.setMonth(nd.getMonth() + 1);
-      cur = nd.getTime() / 1000;
-    }
-    if (!candidates.length || candidates[candidates.length - 1] < maxTime) {
-      candidates.push(maxTime);
-    }
-    // Greedy right-to-left: prioritise recent labels.
-    const picked = [];
-    let lastX = Infinity;
-    for (let i = candidates.length - 1; i >= 0; i--) {
-      const x = toX(candidates[i]);
-      if (lastX - x >= MIN_LABEL_PX && x >= padding.left) {
-        picked.unshift({ week: candidates[i], x });
-        lastX = x;
-      }
-    }
-    return picked;
-  };
-  const xLabels = buildXLabels();
-
-  const title = custom_title || "Lines of Code Contributed";
+  const title = custom_title || "Monthly Code Contributions";
   const borderAttr = hide_border ? "" : `stroke="#${border_color}" stroke-width="1"`;
 
-  // Sample key points for dots (only ~8 dots for a clean look).
-  const dotCount = 8;
-  const dotStep = Math.max(1, Math.floor(points.length / dotCount));
-  const dotPoints = points.filter((_, i) => i % dotStep === 0 || i === points.length - 1);
-
-  // Compute total path length estimate for animation.
-  let pathLen = 0;
-  for (let i = 1; i < pixelPts.length; i++) {
-    pathLen += Math.hypot(pixelPts[i].x - pixelPts[i - 1].x, pixelPts[i].y - pixelPts[i - 1].y);
+  // Y-axis ticks: additions side (positive) and deletions side (negative).
+  const addTicks = 3;
+  const delTicks = 2;
+  const yLabels = [];
+  for (let i = 0; i <= addTicks; i++) {
+    const val = (maxAdd / addTicks) * i;
+    yLabels.push({ val, y: toAddY(val), label: `+${formatNum(Math.round(val))}` });
   }
-  const dashLen = Math.ceil(pathLen * 1.5);
+  for (let i = 1; i <= delTicks; i++) {
+    const val = (maxDel / delTicks) * i;
+    yLabels.push({ val, y: toDelY(val), label: `-${formatNum(Math.round(val))}` });
+  }
+
+  // Build bars SVG.
+  const bars = monthlyData.map((m, i) => {
+    const x = padding.left + i * barGroupW + gap;
+    const addH = (m.additions / maxVal) * chartH * addRatio;
+    const delH = (m.deletions / maxVal) * chartH * (1 - addRatio);
+    const delay = (i / n * 0.8).toFixed(2);
+
+    let svg = "";
+    // Addition bar (goes up from baseline).
+    if (m.additions > 0) {
+      svg += `<rect x="${x.toFixed(1)}" y="${(baselineY - addH).toFixed(1)}" width="${barW.toFixed(1)}" height="${addH.toFixed(1)}" rx="3" fill="url(#addGrad)" class="bar-anim" style="animation-delay: ${delay}s;" />`;
+    }
+    // Deletion bar (goes down from baseline).
+    if (m.deletions > 0) {
+      svg += `\n    <rect x="${x.toFixed(1)}" y="${baselineY.toFixed(1)}" width="${barW.toFixed(1)}" height="${delH.toFixed(1)}" rx="3" fill="url(#delGrad)" class="bar-anim" style="animation-delay: ${delay}s;" />`;
+    }
+    return svg;
+  }).join("\n    ");
+
+  // X-axis month labels.
+  const xLabels = monthlyData.map((m, i) => {
+    const x = padding.left + i * barGroupW + barGroupW / 2;
+    const label = n <= 12 ? MONTHS[m.month] : `${MONTHS[m.month]} '${String(m.year).slice(2)}`;
+    return `<text x="${x.toFixed(1)}" y="${height - 15}" text-anchor="middle" class="label">${label}</text>`;
+  }).join("\n  ");
 
   return `
 <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" fill="none" xmlns="http://www.w3.org/2000/svg">
   <rect width="${width}" height="${height}" rx="4.5" fill="#${bg_color}" ${borderAttr} />
 
   <defs>
-    <!-- Gradient fill: solid at line level → transparent at bottom -->
-    <linearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#${area_color}" stop-opacity="0.4" />
-      <stop offset="100%" stop-color="#${area_color}" stop-opacity="0.02" />
+    <linearGradient id="addGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#${add_color}" stop-opacity="0.9" />
+      <stop offset="100%" stop-color="#${add_color}" stop-opacity="0.4" />
     </linearGradient>
-    <!-- Line glow effect -->
-    <filter id="glow">
-      <feGaussianBlur stdDeviation="3" result="blur" />
-      <feMerge>
-        <feMergeNode in="blur" />
-        <feMergeNode in="SourceGraphic" />
-      </feMerge>
-    </filter>
+    <linearGradient id="delGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#${del_color}" stop-opacity="0.4" />
+      <stop offset="100%" stop-color="#${del_color}" stop-opacity="0.9" />
+    </linearGradient>
   </defs>
 
   <style>
@@ -254,48 +204,37 @@ const renderLocChart = (data, options = {}) => {
     .stat { font: 600 12px 'Segoe UI', Ubuntu, Sans-Serif; fill: #${text_color}; }
     .stat-label { font: 400 11px 'Segoe UI', Ubuntu, Sans-Serif; fill: #${text_color}; opacity: 0.45; }
     .grid { stroke: #${text_color}; stroke-opacity: 0.06; stroke-width: 1; stroke-dasharray: 4 4; }
-    .line { stroke: #${line_color}; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; fill: none; filter: url(#glow); }
-    .dot { fill: #${point_color}; }
-    .dot-ring { fill: none; stroke: #${point_color}; stroke-width: 1.5; stroke-opacity: 0.3; }
-    @keyframes draw { from { stroke-dashoffset: ${dashLen}; } to { stroke-dashoffset: 0; } }
-    .line-animated { stroke-dasharray: ${dashLen}; animation: draw 2s ease-out forwards; }
-    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-    .fade-in { opacity: 0; animation: fadeIn 0.6s ease-in-out 1.5s forwards; }
-    .fade-in-fast { opacity: 0; animation: fadeIn 0.4s ease-in-out 0.3s forwards; }
+    .baseline { stroke: #${text_color}; stroke-opacity: 0.15; stroke-width: 1; }
+    .val-label { font: 600 9px 'Segoe UI', Ubuntu, Sans-Serif; fill: #${text_color}; opacity: 0.6; }
+    @keyframes barGrow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+    .bar-anim { animation: barGrow 0.5s ease-out forwards; }
   </style>
 
   <!-- Title -->
   <text x="${padding.left}" y="30" class="title">${title}</text>
 
   <!-- Stats summary -->
-  <text x="${width - padding.right}" y="22" text-anchor="end" class="stat">+${formatNum(totalAdditions)}</text>
+  <text x="${width - padding.right}" y="22" text-anchor="end" class="stat" style="fill: #${add_color};">+${formatNum(totalAdditions)}</text>
   <text x="${width - padding.right}" y="37" text-anchor="end" class="stat-label">additions</text>
-  <text x="${width - padding.right - 90}" y="22" text-anchor="end" class="stat" style="fill: #${deletion_color};">-${formatNum(totalDeletions)}</text>
+  <text x="${width - padding.right - 90}" y="22" text-anchor="end" class="stat" style="fill: #${del_color};">-${formatNum(totalDeletions)}</text>
   <text x="${width - padding.right - 90}" y="37" text-anchor="end" class="stat-label">deletions</text>
-  <text x="${width - padding.right - 180}" y="22" text-anchor="end" class="stat" style="fill: #${area_color};">${formatNum(netLines)} net</text>
+  <text x="${width - padding.right - 180}" y="22" text-anchor="end" class="stat">${formatNum(netLines)} net</text>
   <text x="${width - padding.right - 180}" y="37" text-anchor="end" class="stat-label">lines</text>
 
   <!-- Grid lines (dashed) -->
   ${yLabels.map((l) => `<line x1="${padding.left}" y1="${l.y.toFixed(1)}" x2="${width - padding.right}" y2="${l.y.toFixed(1)}" class="grid" />`).join("\n  ")}
 
+  <!-- Baseline -->
+  <line x1="${padding.left}" y1="${baselineY.toFixed(1)}" x2="${width - padding.right}" y2="${baselineY.toFixed(1)}" class="baseline" />
+
   <!-- Y-axis labels -->
-  ${yLabels.map((l) => `<text x="${padding.left - 10}" y="${(l.y + 4).toFixed(1)}" text-anchor="end" class="label">${formatNum(Math.round(l.val))}</text>`).join("\n  ")}
+  ${yLabels.map((l) => `<text x="${padding.left - 10}" y="${(l.y + 4).toFixed(1)}" text-anchor="end" class="label">${l.label}</text>`).join("\n  ")}
 
-  <!-- X-axis labels -->
-  ${xLabels.map((l) => `<text x="${l.x.toFixed(1)}" y="${height - 15}" text-anchor="middle" class="label">${formatDate(l.week)}</text>`).join("\n  ")}
+  <!-- Bars -->
+  ${bars}
 
-  <!-- Area fill with gradient -->
-  <path d="${areaPath}" fill="url(#areaGrad)" class="fade-in-fast" />
-
-  <!-- Smooth line with glow -->
-  <path d="${linePath}" class="line line-animated" />
-
-  <!-- Dots with outer ring -->
-  ${dotPoints.map((p) => {
-    const cx = toX(p.week).toFixed(1);
-    const cy = toY(p.value).toFixed(1);
-    return `<circle cx="${cx}" cy="${cy}" r="6" class="dot-ring fade-in" />\n  <circle cx="${cx}" cy="${cy}" r="2.5" class="dot fade-in" />`;
-  }).join("\n  ")}
+  <!-- X-axis month labels -->
+  ${xLabels}
 </svg>`.trim();
 };
 
