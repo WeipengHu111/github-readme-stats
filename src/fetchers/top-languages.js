@@ -95,6 +95,7 @@ const orgFetcher = (variables, token) => {
  * @param {string[]} exclude_repo List of repositories to exclude.
  * @param {number} size_weight Weightage to be given to size.
  * @param {number} count_weight Weightage to be given to count.
+ * @param {string} [include_orgs] Comma-separated org logins to include.
  * @returns {Promise<TopLangData>} Top languages data.
  */
 const fetchTopLanguages = async (
@@ -102,6 +103,7 @@ const fetchTopLanguages = async (
   exclude_repo = [],
   size_weight = 1,
   count_weight = 0,
+  include_orgs,
 ) => {
   if (!username) {
     throw new MissingParamError(["username"]);
@@ -131,8 +133,8 @@ const fetchTopLanguages = async (
 
   let repoNodes = res.data.data.user.repositories.nodes;
 
-  // Fetch additional repos from organizations specified in INCLUDE_ORGS env var.
-  const includeOrgs = process.env.INCLUDE_ORGS;
+  // Fetch additional repos from organizations (URL param or env var).
+  const includeOrgs = include_orgs || process.env.INCLUDE_ORGS;
   if (includeOrgs) {
     const orgs = includeOrgs.split(",").map((o) => o.trim()).filter(Boolean);
     for (const org of orgs) {
