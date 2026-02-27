@@ -56,8 +56,9 @@ const renderLocChart = (data, options = {}) => {
   const minVal = Math.min(...points.map((p) => p.value), 0);
   const valRange = maxVal - minVal || 1;
 
-  // Map data to chart coordinates.
-  const toX = (t) => padding.left + ((t - minTime) / timeRange) * chartW;
+  // Non-linear (sqrt) time scale: gives more space to recent data.
+  const toNorm = (t) => Math.sqrt((t - minTime) / timeRange);
+  const toX = (t) => padding.left + toNorm(t) * chartW;
   const toY = (v) => padding.top + chartH - ((v - minVal) / valRange) * chartH;
 
   // Build SVG path for the line.
@@ -75,10 +76,14 @@ const renderLocChart = (data, options = {}) => {
     return n.toString();
   };
 
-  // Format date.
+  // Adaptive date format: older => "2022", recent (< 12 months) => "Jan '26"
+  const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const nowTs = Date.now() / 1000;
+  const oneYearAgo = nowTs - 365 * 86400;
   const formatDate = (ts) => {
     const d = new Date(ts * 1000);
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    if (ts < oneYearAgo) return `${d.getFullYear()}`;
+    return `${MONTHS[d.getMonth()]} '${String(d.getFullYear()).slice(2)}`;
   };
 
   // Y-axis labels (5 ticks).
@@ -88,17 +93,37 @@ const renderLocChart = (data, options = {}) => {
     return { val, y: toY(val) };
   });
 
-  // X-axis labels (pick ~6 dates).
-  const xTickCount = Math.min(6, points.length);
-  const xStep = Math.max(1, Math.floor(points.length / xTickCount));
-  const xLabels = [];
-  for (let i = 0; i < points.length; i += xStep) {
-    xLabels.push({ week: points[i].week, x: toX(points[i].week) });
-  }
-  // Always include the last point.
-  if (xLabels.length > 0 && xLabels[xLabels.length - 1].week !== maxTime) {
-    xLabels.push({ week: maxTime, x: toX(maxTime) });
-  }
+  // Smart X-axis labels: month boundaries, right-to-left greedy with min spacing.
+  const MIN_LABEL_PX = 85;
+  const buildXLabels = () => {
+    // Generate month-start candidates within data range.
+    const candidates = [];
+    const sd = new Date(minTime * 1000);
+    sd.setDate(1); sd.setHours(0, 0, 0, 0);
+    let cur = sd.getTime() / 1000;
+    while (cur <= maxTime) {
+      if (cur >= minTime) candidates.push(cur);
+      const nd = new Date(cur * 1000);
+      nd.setMonth(nd.getMonth() + 1);
+      cur = nd.getTime() / 1000;
+    }
+    // Always consider the last data point.
+    if (!candidates.length || candidates[candidates.length - 1] < maxTime) {
+      candidates.push(maxTime);
+    }
+    // Greedy right-to-left: prioritise recent labels.
+    const picked = [];
+    let lastX = Infinity;
+    for (let i = candidates.length - 1; i >= 0; i--) {
+      const x = toX(candidates[i]);
+      if (lastX - x >= MIN_LABEL_PX && x >= padding.left) {
+        picked.unshift({ week: candidates[i], x });
+        lastX = x;
+      }
+    }
+    return picked;
+  };
+  const xLabels = buildXLabels();
 
   const title = custom_title || "Lines of Code Contributed";
   const borderAttr = hide_border ? "" : `stroke="#161B22" stroke-width="1"`;
