@@ -47,6 +47,44 @@ const fetcher = (variables, token) => {
 };
 
 /**
+ * Fetch repos for a single organization.
+ *
+ * @param {any} variables Fetcher variables.
+ * @param {string} token GitHub token.
+ * @returns {Promise<import("axios").AxiosResponse>} Org repos response.
+ */
+const orgFetcher = (variables, token) => {
+  return request(
+    {
+      query: `
+      query orgInfo($login: String!) {
+        organization(login: $login) {
+          repositories(isFork: false, first: 100) {
+            nodes {
+              name
+              languages(first: 10, orderBy: {field: SIZE, direction: DESC}) {
+                edges {
+                  size
+                  node {
+                    color
+                    name
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      `,
+      variables,
+    },
+    {
+      Authorization: `token ${token}`,
+    },
+  );
+};
+
+/**
  * @typedef {import("./types").TopLangData} TopLangData Top languages data.
  */
 
@@ -92,6 +130,25 @@ const fetchTopLanguages = async (
   }
 
   let repoNodes = res.data.data.user.repositories.nodes;
+
+  // Fetch additional repos from organizations specified in INCLUDE_ORGS env var.
+  const includeOrgs = process.env.INCLUDE_ORGS;
+  if (includeOrgs) {
+    const orgs = includeOrgs.split(",").map((o) => o.trim()).filter(Boolean);
+    for (const org of orgs) {
+      try {
+        const orgRes = await retryer(orgFetcher, { login: org });
+        if (orgRes.data.data && orgRes.data.data.organization) {
+          repoNodes = repoNodes.concat(
+            orgRes.data.data.organization.repositories.nodes,
+          );
+        }
+      } catch (err) {
+        logger.log(`Failed to fetch org repos for ${org}: ${err.message}`);
+      }
+    }
+  }
+
   /** @type {Record<string, boolean>} */
   let repoToHide = {};
   const allExcludedRepos = [...exclude_repo, ...excludeRepositories];
