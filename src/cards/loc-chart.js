@@ -96,13 +96,19 @@ const renderLocChart = (data, options = {}) => {
   // Smart X-axis labels: month boundaries, right-to-left greedy with min spacing.
   const MIN_LABEL_PX = 85;
   const buildXLabels = () => {
-    // Generate month-start candidates within data range.
+    // For dates older than 1 year: only January candidates (yearly).
+    // For recent dates (< 1 year): monthly candidates.
     const candidates = [];
     const sd = new Date(minTime * 1000);
     sd.setDate(1); sd.setHours(0, 0, 0, 0);
     let cur = sd.getTime() / 1000;
     while (cur <= maxTime) {
-      if (cur >= minTime) candidates.push(cur);
+      if (cur >= minTime) {
+        const cd = new Date(cur * 1000);
+        if (cur >= oneYearAgo || cd.getMonth() === 0) {
+          candidates.push(cur);
+        }
+      }
       const nd = new Date(cur * 1000);
       nd.setMonth(nd.getMonth() + 1);
       cur = nd.getTime() / 1000;
