@@ -134,44 +134,47 @@ const fetchLoc = async (username, include_orgs) => {
   /** @type {Record<number, { a: number, d: number, c: number }>} */
   const weeklyMap = {};
 
-  const fetchRepoStats = async (repo) => {
-    const res = await axios({
-      method: "get",
-      url: `https://api.github.com/repos/${repo.owner}/${repo.name}/stats/contributors`,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `token ${process.env.PAT_1}`,
-      },
-      timeout: 5000,
-      validateStatus: (s) => s < 500,
+  const token = process.env.PAT_1;
+
+  const fetchOneRepo = async (repo) => {
+    const url = `https://api.github.com/repos/${repo.owner}/${repo.name}/stats/contributors`;
+    let res = await axios({
+      method: "get", url,
+      headers: { Authorization: `token ${token}` },
+      timeout: 8000,
+      validateStatus: () => true,
     });
 
-    if (!Array.isArray(res.data)) return null;
+    // 202 means GitHub is computing; wait briefly and retry once.
+    if (res.status === 202) {
+      await new Promise((r) => setTimeout(r, 1500));
+      res = await axios({
+        method: "get", url,
+        headers: { Authorization: `token ${token}` },
+        timeout: 8000,
+        validateStatus: () => true,
+      });
+    }
 
-    const contributor = res.data.find(
+    if (!Array.isArray(res.data)) return null;
+    return res.data.find(
       (c) => c.author && c.author.login.toLowerCase() === username.toLowerCase(),
-    );
-    return contributor || null;
+    ) || null;
   };
 
-  // Process in batches of 10 for parallelism.
-  const batchSize = 10;
-  for (let i = 0; i < repos.length; i += batchSize) {
-    const batch = repos.slice(i, i + batchSize);
-    const results = await Promise.allSettled(batch.map(fetchRepoStats));
+  // Fire all requests in parallel.
+  const results = await Promise.allSettled(repos.map(fetchOneRepo));
 
-    for (const result of results) {
-      if (result.status !== "fulfilled" || !result.value) continue;
-      const contributor = result.value;
-      for (const week of contributor.weeks) {
-        if (week.a === 0 && week.d === 0 && week.c === 0) continue;
-        if (!weeklyMap[week.w]) {
-          weeklyMap[week.w] = { a: 0, d: 0, c: 0 };
-        }
-        weeklyMap[week.w].a += week.a;
-        weeklyMap[week.w].d += week.d;
-        weeklyMap[week.w].c += week.c;
+  for (const result of results) {
+    if (result.status !== "fulfilled" || !result.value) continue;
+    for (const week of result.value.weeks) {
+      if (week.a === 0 && week.d === 0 && week.c === 0) continue;
+      if (!weeklyMap[week.w]) {
+        weeklyMap[week.w] = { a: 0, d: 0, c: 0 };
       }
+      weeklyMap[week.w].a += week.a;
+      weeklyMap[week.w].d += week.d;
+      weeklyMap[week.w].c += week.c;
     }
   }
 
