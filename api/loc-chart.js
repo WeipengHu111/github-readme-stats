@@ -20,15 +20,18 @@ export default async (req, res) => {
   const {
     username,
     include_orgs,
+    theme,
     bg_color,
     line_color,
     area_color,
     point_color,
     title_color,
     text_color,
+    border_color,
     hide_border,
     custom_title,
     cache_seconds,
+    months,
   } = req.query;
 
   res.setHeader("Content-Type", "image/svg+xml");
@@ -37,7 +40,7 @@ export default async (req, res) => {
     return res.send(
       renderError({
         message: "Missing required parameter: username",
-        renderOptions: { title_color, text_color, bg_color, border_color: undefined, theme: undefined },
+        renderOptions: { title_color, text_color, bg_color, border_color, theme },
       }),
     );
   }
@@ -55,14 +58,17 @@ export default async (req, res) => {
 
     return res.send(
       renderLocChart(locData, {
+        theme,
         bg_color,
         line_color,
         area_color,
         point_color,
         title_color,
         text_color,
+        border_color,
         hide_border: hide_border === undefined ? true : parseBoolean(hide_border),
         custom_title,
+        months: months ? parseInt(months, 10) : undefined,
       }),
     );
   } catch (err) {
@@ -72,14 +78,14 @@ export default async (req, res) => {
         renderError({
           message: err.message,
           secondaryMessage: retrieveSecondaryMessage(err),
-          renderOptions: { title_color, text_color, bg_color, border_color: undefined, theme: undefined },
+          renderOptions: { title_color, text_color, bg_color, border_color, theme },
         }),
       );
     }
     return res.send(
       renderError({
         message: "An unknown error occurred",
-        renderOptions: { title_color, text_color, bg_color, border_color: undefined, theme: undefined },
+        renderOptions: { title_color, text_color, bg_color, border_color, theme },
       }),
     );
   }
