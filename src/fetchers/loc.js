@@ -7,25 +7,6 @@ import { MissingParamError } from "../common/error.js";
 import { request } from "../common/http.js";
 
 /**
- * Fetch contributor stats for a single repo via REST API.
- * Returns weekly {additions, deletions, commits} for the target user.
- *
- * @param {{ owner: string, repo: string, username: string }} variables
- * @param {string} token
- * @returns {Promise<import("axios").AxiosResponse>}
- */
-const repoStatsFetcher = (variables, token) => {
-  return axios({
-    method: "get",
-    url: `https://api.github.com/repos/${variables.owner}/${variables.repo}/stats/contributors`,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `token ${token}`,
-    },
-  });
-};
-
-/**
  * Fetch list of org repos via GraphQL.
  *
  * @param {any} variables
@@ -149,35 +130,39 @@ const fetchLoc = async (username, include_orgs) => {
     return true;
   });
 
-  // 2. For each repo, fetch contributor stats and extract the user's data.
+  // 2. Fetch contributor stats in parallel (batches of 10).
   /** @type {Record<number, { a: number, d: number, c: number }>} */
   const weeklyMap = {};
 
-  for (const repo of repos) {
-    try {
-      let res = await retryer(repoStatsFetcher, {
-        owner: repo.owner,
-        repo: repo.name,
-        username,
-      });
+  const fetchRepoStats = async (repo) => {
+    const res = await axios({
+      method: "get",
+      url: `https://api.github.com/repos/${repo.owner}/${repo.name}/stats/contributors`,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `token ${process.env.PAT_1}`,
+      },
+      timeout: 5000,
+      validateStatus: (s) => s < 500,
+    });
 
-      // The stats API returns 202 while computing; retry once after a delay.
-      if (res.status === 202) {
-        await new Promise((r) => setTimeout(r, 2000));
-        res = await retryer(repoStatsFetcher, {
-          owner: repo.owner,
-          repo: repo.name,
-          username,
-        });
-      }
+    if (!Array.isArray(res.data)) return null;
 
-      if (!Array.isArray(res.data)) continue;
+    const contributor = res.data.find(
+      (c) => c.author && c.author.login.toLowerCase() === username.toLowerCase(),
+    );
+    return contributor || null;
+  };
 
-      const contributor = res.data.find(
-        (c) => c.author && c.author.login.toLowerCase() === username.toLowerCase(),
-      );
-      if (!contributor) continue;
+  // Process in batches of 10 for parallelism.
+  const batchSize = 10;
+  for (let i = 0; i < repos.length; i += batchSize) {
+    const batch = repos.slice(i, i + batchSize);
+    const results = await Promise.allSettled(batch.map(fetchRepoStats));
 
+    for (const result of results) {
+      if (result.status !== "fulfilled" || !result.value) continue;
+      const contributor = result.value;
       for (const week of contributor.weeks) {
         if (week.a === 0 && week.d === 0 && week.c === 0) continue;
         if (!weeklyMap[week.w]) {
@@ -187,9 +172,6 @@ const fetchLoc = async (username, include_orgs) => {
         weeklyMap[week.w].d += week.d;
         weeklyMap[week.w].c += week.c;
       }
-    } catch (err) {
-      // Skip repos that fail (403, 404, etc.)
-      logger.log(`Failed to fetch stats for ${repo.owner}/${repo.name}: ${err}`);
     }
   }
 
