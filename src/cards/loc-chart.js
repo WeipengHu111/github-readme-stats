@@ -206,8 +206,8 @@ const renderLocChart = (data, options = {}) => {
     .grid { stroke: #${text_color}; stroke-opacity: 0.06; stroke-width: 1; stroke-dasharray: 4 4; }
     .baseline { stroke: #${text_color}; stroke-opacity: 0.15; stroke-width: 1; }
     .val-label { font: 600 9px 'Segoe UI', Ubuntu, Sans-Serif; fill: #${text_color}; opacity: 0.6; }
-    @keyframes barGrow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
-    .bar-anim { animation: barGrow 0.5s ease-out forwards; }
+    @keyframes barFadeIn { from { opacity: 0; } to { opacity: 1; } }
+    .bar-anim { opacity: 0; animation: barFadeIn 0.4s ease-out forwards; }
   </style>
 
   <!-- Title -->
